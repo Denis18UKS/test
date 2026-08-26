@@ -12,6 +12,11 @@ android {
         targetSdk 35
         versionCode 1
         versionName '1.0.0'
+
+        // Real phones are ARM. Excluding emulator-only x86 ABIs keeps the APK much smaller.
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
     }
 
     buildTypes {
