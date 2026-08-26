@@ -35,7 +35,11 @@ public class MainActivity extends CameraActivity implements CameraBridgeViewBase
     private TargetImageView referenceView;
     private TextView status,title,confidence,method,rotation,coords;
     private Button pieceBtn,fragmentBtn;
-    private final PieceMatcher matcher=new PieceMatcher();
+
+    // Важно: PieceMatcher внутри создаёт SIFT, который использует native OpenCV.
+    // Поэтому его нельзя создавать как поле Activity до OpenCVLoader.initLocal().
+    private PieceMatcher matcher;
+
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private final AtomicBoolean busy=new AtomicBoolean(false);
     private volatile boolean fragmentMode=false;
@@ -43,8 +47,23 @@ public class MainActivity extends CameraActivity implements CameraBridgeViewBase
     private long lastScan=0;
 
     @Override protected void onCreate(Bundle b){
-        super.onCreate(b);setContentView(R.layout.activity_main);
-        if(!OpenCVLoader.initLocal()){Toast.makeText(this,"OpenCV не загрузился",Toast.LENGTH_LONG).show();finish();return;}
+        super.onCreate(b);
+
+        // Native-библиотеки OpenCV должны быть загружены ДО создания PieceMatcher/SIFT.
+        if(!OpenCVLoader.initLocal()){
+            Toast.makeText(this,"OpenCV не загрузился",Toast.LENGTH_LONG).show();
+            finish();
+            return;
+        }
+        try {
+            matcher = new PieceMatcher();
+        } catch (Throwable t) {
+            Toast.makeText(this,"Не удалось запустить модуль распознавания: "+t.getClass().getSimpleName(),Toast.LENGTH_LONG).show();
+            finish();
+            return;
+        }
+
+        setContentView(R.layout.activity_main);
         cameraView=findViewById(R.id.camera_view);overlay=findViewById(R.id.scan_overlay);referenceView=findViewById(R.id.reference_view);
         status=findViewById(R.id.status_chip);title=findViewById(R.id.match_title);confidence=findViewById(R.id.match_confidence);
         method=findViewById(R.id.match_method);rotation=findViewById(R.id.match_rotation);coords=findViewById(R.id.match_coords);
@@ -67,7 +86,9 @@ public class MainActivity extends CameraActivity implements CameraBridgeViewBase
         super.onActivityResult(req,result,data);if(req!=PICK_REFERENCE||result!=Activity.RESULT_OK||data==null||data.getData()==null)return;
         Uri u=data.getData();try(InputStream in=getContentResolver().openInputStream(u)){Bitmap bmp=BitmapFactory.decodeStream(in);if(bmp==null)throw new Exception("decode");
             referenceView.setReferenceBitmap(bmp);status.setText("Подготавливаю эталон…");referenceReady=false;Mat m=new Mat();Utils.bitmapToMat(bmp,m);
-            worker.execute(()->{matcher.setReference(m);m.release();referenceReady=true;runOnUiThread(()->status.setText(fragmentMode?"Покажите собранный фрагмент":"Покажите одну деталь"));});
+            worker.execute(()->{try{matcher.setReference(m);referenceReady=true;runOnUiThread(()->status.setText(fragmentMode?"Покажите собранный фрагмент":"Покажите одну деталь"));}
+                catch(Throwable t){referenceReady=false;runOnUiThread(()->{status.setText("Ошибка подготовки эталона");Toast.makeText(this,"Ошибка OpenCV: "+t.getClass().getSimpleName(),Toast.LENGTH_LONG).show();});}
+                finally{m.release();}});
         }catch(Exception e){Toast.makeText(this,"Не удалось открыть изображение",Toast.LENGTH_LONG).show();}
     }
 
@@ -76,7 +97,7 @@ public class MainActivity extends CameraActivity implements CameraBridgeViewBase
 
     @Override public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame f){
         Mat rgba=f.rgba();long now=SystemClock.elapsedRealtime();long interval=fragmentMode?1900:1350;
-        if(referenceReady&&now-lastScan>interval&&busy.compareAndSet(false,true)){
+        if(referenceReady&&matcher!=null&&now-lastScan>interval&&busy.compareAndSet(false,true)){
             lastScan=now;Mat snap=rgba.clone();boolean mode=fragmentMode;
             runOnUiThread(()->{status.setText("Сканирую…");overlay.setState(Color.rgb(108,69,200),"Выделяю реальный контур…");});
             worker.execute(()->{MatchResult r;try{r=matcher.analyze(snap,mode);}catch(Throwable t){r=MatchResult.noMatch("Ошибка анализа");}finally{snap.release();}
