@@ -20,9 +20,9 @@ jobs:
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk PuzzleScan-1.0.0.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk PuzzleScan-1.0.1.apk
       - uses: actions/upload-artifact@v4
         with:
           name: PuzzleScan-APK
-          path: PuzzleScan-1.0.0.apk
+          path: PuzzleScan-1.0.1.apk
           if-no-files-found: error
