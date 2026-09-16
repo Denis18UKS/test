@@ -1,0 +1,132 @@
+name: Player Bots Body Anchor CI v8
+on:
+  push:
+    branches: [chatgpt-playerbots-build-20260916]
+    paths:
+      - '.ci/playerbots-body-anchor/trigger-v8'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.8'
+
+      - name: Restore verified base and overlay all fixes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat .ci/playerbots-src/chunk-* > /tmp/player-bots-v5-src.b64
+          base64 -d /tmp/player-bots-v5-src.b64 > /tmp/player-bots-v5-src.tgz
+          echo '0a4d7fd86b8b17795a99db95bd2a058c5c17e80af1bde69cffad3f90863436f3  /tmp/player-bots-v5-src.tgz' | sha256sum -c -
+          rm -rf work
+          mkdir -p work
+          tar -xzf /tmp/player-bots-v5-src.tgz -C work
+          cp .ci/playerbots-gui-fix/MinecraftClientMixin.java work/src/main/java/dev/denis/playerbots/mixin/MinecraftClientMixin.java
+          cp .ci/playerbots-toggle/BotRadialScreen.java work/src/main/java/dev/denis/playerbots/client/screen/BotRadialScreen.java
+          cp .ci/playerbots-body-anchor/PlayerBotsClient.java work/src/main/java/dev/denis/playerbots/client/PlayerBotsClient.java
+          cp .ci/playerbots-body-anchor/ClientBotState.java work/src/main/java/dev/denis/playerbots/client/ClientBotState.java
+          cp .ci/playerbots-body-anchor/PossessedBodyVisual.java work/src/main/java/dev/denis/playerbots/client/PossessedBodyVisual.java
+          cp .ci/playerbots-body-anchor/PlayerEntityRendererMixin.java work/src/main/java/dev/denis/playerbots/mixin/PlayerEntityRendererMixin.java
+          cp .ci/playerbots-body-anchor/playerbots.mixins.json work/src/main/resources/playerbots.mixins.json
+          cp .ci/playerbots-gui-fix/test_configurator_activation.py work/dev-tests/test_configurator_activation.py
+          cp .ci/playerbots-toggle/test_radial_toggle.py work/dev-tests/test_radial_toggle.py
+          cp .ci/playerbots-body-anchor/test_real_body_anchor.py work/dev-tests/test_real_body_anchor.py
+          sed -i 's/mod_version=1.0.0/mod_version=1.0.3/' work/gradle.properties
+
+      - name: Run regression and core tests
+        working-directory: work
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 dev-tests/test_real_body_anchor.py
+          python3 dev-tests/test_radial_toggle.py
+          python3 dev-tests/test_configurator_activation.py
+          rm -rf /tmp/playerbots-core-classes
+          mkdir -p /tmp/playerbots-core-classes
+          javac -d /tmp/playerbots-core-classes src/main/java/dev/denis/playerbots/core/*.java dev-tests/PlayerBotsCoreTests.java
+          java -cp /tmp/playerbots-core-classes PlayerBotsCoreTests
+
+      - name: Generate Gradle wrapper
+        working-directory: work
+        run: gradle wrapper --gradle-version 8.8
+
+      - name: Build remapped Fabric jar
+        working-directory: work
+        run: ./gradlew --stacktrace clean build
+
+      - name: Inspect fixed jar contents
+        working-directory: work
+        shell: bash
+        run: |
+          set -euxo pipefail
+          JAR='build/libs/player-bots-1.0.3.jar'
+          test -f "$JAR"
+          jar tf "$JAR" > jar-contents.txt
+          grep -Fx 'fabric.mod.json' jar-contents.txt
+          grep -Fx 'dev/denis/playerbots/client/PossessedBodyVisual.class' jar-contents.txt
+          grep -Fx 'dev/denis/playerbots/mixin/PlayerEntityRendererMixin.class' jar-contents.txt
+          grep -Fx 'dev/denis/playerbots/client/screen/BotRadialScreen.class' jar-contents.txt
+          grep -Fx 'dev/denis/playerbots/client/screen/BotConfiguratorScreen.class' jar-contents.txt
+          unzip -p "$JAR" playerbots.mixins.json > built-mixins.json
+          grep -F 'PlayerEntityRendererMixin' built-mixins.json
+          grep -F 'MinecraftClientMixin' built-mixins.json
+
+      - name: Dedicated server startup smoke test
+        working-directory: work
+        shell: bash
+        run: |
+          mkdir -p run
+          echo 'eula=true' > run/eula.txt
+          set +e
+          timeout 90s ./gradlew runServer --no-daemon > server-smoke.log 2>&1
+          code=$?
+          set -e
+          cat server-smoke.log
+          if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then exit "$code"; fi
+          grep -F 'Done (' server-smoke.log
+
+      - name: Client startup smoke test
+        working-directory: work
+        shell: bash
+        run: |
+          set -euxo pipefail
+          command -v xvfb-run
+          set +e
+          timeout --signal=TERM --kill-after=10s 120s xvfb-run -a ./gradlew runClient --no-daemon > client-smoke.log 2>&1
+          code=$?
+          set -e
+          cat client-smoke.log
+          if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then exit "$code"; fi
+          if grep -E 'Mixin apply failed|InjectionError|InvalidMixinException|NoSuchMethodError|NoSuchFieldError' client-smoke.log; then exit 1; fi
+          grep -F 'Setting user:' client-smoke.log
+
+      - name: Package fixed sources
+        working-directory: work
+        shell: bash
+        run: |
+          zip -qr player-bots-1.0.3-sources.zip . \
+            -x '.gradle/*' 'build/*' 'run/*' 'server-smoke.log' 'client-smoke.log' 'jar-contents.txt' 'built-mixins.json'
+          test -f gradlew
+          test -f gradlew.bat
+          test -f gradle/wrapper/gradle-wrapper.jar
+          unzip -t player-bots-1.0.3-sources.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: player-bots-body-anchor-v1.0.3
+          if-no-files-found: error
+          path: |
+            work/build/libs/player-bots-1.0.3.jar
+            work/build/libs/player-bots-1.0.3-sources.jar
+            work/player-bots-1.0.3-sources.zip
+            work/server-smoke.log
+            work/client-smoke.log
+            work/jar-contents.txt
+            work/built-mixins.json
