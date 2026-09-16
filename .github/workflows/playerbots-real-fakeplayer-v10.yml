@@ -29,13 +29,11 @@ jobs:
           rm -rf work
           mkdir -p work
           tar -xzf /tmp/player-bots-v5-src.tgz -C work
-
           cp .ci/playerbots-gui-fix/MinecraftClientMixin.java work/src/main/java/dev/denis/playerbots/mixin/MinecraftClientMixin.java
           cp .ci/playerbots-toggle/BotRadialScreen.java work/src/main/java/dev/denis/playerbots/client/screen/BotRadialScreen.java
           cp .ci/playerbots-body-anchor/PlayerBotsClient.java work/src/main/java/dev/denis/playerbots/client/PlayerBotsClient.java
           cp .ci/playerbots-body-anchor/ClientBotState.java work/src/main/java/dev/denis/playerbots/client/ClientBotState.java
           cp .ci/playerbots-body-anchor/PossessedBodyVisual.java work/src/main/java/dev/denis/playerbots/client/PossessedBodyVisual.java
-
           cp .ci/playerbots-possession-v9/PossessionRouting.java work/src/main/java/dev/denis/playerbots/core/PossessionRouting.java
           cp .ci/playerbots-possession-v9/PossessionManager.java work/src/main/java/dev/denis/playerbots/bot/PossessionManager.java
           cp .ci/playerbots-possession-v9/EntityPushMixin.java work/src/main/java/dev/denis/playerbots/mixin/EntityPushMixin.java
@@ -43,7 +41,6 @@ jobs:
           cp .ci/playerbots-possession-v9/PlayerEntityRendererMixin.java work/src/main/java/dev/denis/playerbots/mixin/PlayerEntityRendererMixin.java
           cp .ci/playerbots-possession-v9/HeldItemRendererMixin.java work/src/main/java/dev/denis/playerbots/mixin/HeldItemRendererMixin.java
           cp .ci/playerbots-possession-v9/playerbots.mixins.json work/src/main/resources/playerbots.mixins.json
-
           cp .ci/playerbots-gui-fix/test_configurator_activation.py work/dev-tests/test_configurator_activation.py
           cp .ci/playerbots-toggle/test_radial_toggle.py work/dev-tests/test_radial_toggle.py
           cp .ci/playerbots-possession-v9/test_real_body_anchor.py work/dev-tests/test_real_body_anchor.py
@@ -51,12 +48,12 @@ jobs:
           cp .ci/playerbots-possession-v9/test_inventory_separation.py work/dev-tests/test_inventory_separation.py
           cp .ci/playerbots-possession-v9/PlayerBotsCoreTests.java work/dev-tests/PlayerBotsCoreTests.java
           sed -i 's/mod_version=1.0.0/mod_version=1.0.4/' work/gradle.properties
-
-          base64 -d .ci/playerbots-v11/playerbots-v11.patch.gz.b64 | gzip -dc | patch -p1 -E -d work
+          cat .ci/playerbots-v11-parts/part-* | base64 -d > /tmp/playerbots-v11.patch.gz
+          echo 'e938e392abad7c8fb755292eea9cb5dfc41ab43585d2723219a62a5714236fa6  /tmp/playerbots-v11.patch.gz' | sha256sum -c -
+          gzip -dc /tmp/playerbots-v11.patch.gz | patch -p1 -E -d work
           rm -f work/src/main/java/dev/denis/playerbots/client/PossessedBodyVisual.java
           rm -f work/src/main/java/dev/denis/playerbots/mixin/EntityTrackerMixin.java
           rm -f work/src/main/java/dev/denis/playerbots/mixin/ServerPlayNetworkHandlerAccessor.java
-
           grep -Fx 'mod_version=1.1.0' work/gradle.properties
           test ! -e work/src/main/java/dev/denis/playerbots/client/PossessedBodyVisual.java
           test ! -e work/src/main/java/dev/denis/playerbots/mixin/EntityTrackerMixin.java
@@ -132,88 +129,46 @@ jobs:
           mkdir -p run
           echo 'eula=true' > run/eula.txt
           cat > /tmp/playerbots_server_test.py <<'PY'
-          import os, re, subprocess, sys, threading, time
-
+          import re, subprocess, sys, threading, time
           log_path = 'server-player-count.log'
-          proc = subprocess.Popen(
-              ['./gradlew', 'runServer', '--no-daemon'],
-              stdin=subprocess.PIPE,
-              stdout=subprocess.PIPE,
-              stderr=subprocess.STDOUT,
-              text=True,
-              bufsize=1,
-          )
+          proc = subprocess.Popen(['./gradlew', 'runServer', '--no-daemon'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
           lines = []
           lock = threading.Lock()
-
           def reader():
               with open(log_path, 'w', encoding='utf-8') as out:
                   for line in proc.stdout:
-                      sys.stdout.write(line)
-                      out.write(line)
-                      out.flush()
-                      with lock:
-                          lines.append(line)
-
+                      sys.stdout.write(line); out.write(line); out.flush()
+                      with lock: lines.append(line)
           threading.Thread(target=reader, daemon=True).start()
-
           def snapshot():
-              with lock:
-                  return ''.join(lines)
-
+              with lock: return ''.join(lines)
           def wait_for(pattern, timeout, regex=False):
               end = time.time() + timeout
               while time.time() < end:
                   text = snapshot()
-                  if (re.search(pattern, text) if regex else pattern in text):
-                      return text
-                  if proc.poll() is not None:
-                      raise RuntimeError(f'server exited early with {proc.returncode}')
+                  if (re.search(pattern, text) if regex else pattern in text): return text
+                  if proc.poll() is not None: raise RuntimeError(f'server exited early with {proc.returncode}')
                   time.sleep(0.25)
               raise TimeoutError(f'timed out waiting for: {pattern}\n--- log tail ---\n{snapshot()[-8000:]}')
-
           def command(cmd):
-              assert proc.stdin is not None
-              proc.stdin.write(cmd + '\n')
-              proc.stdin.flush()
-
+              proc.stdin.write(cmd + '\n'); proc.stdin.flush()
           try:
               wait_for('Done (', 120)
-              command('bot create BotOne')
-              time.sleep(2)
-              command('list')
-              wait_for(r'There are 1 of a max of \\d+ players online:.*BotOne', 20, regex=True)
-
-              command('bot create BotTwo')
-              time.sleep(2)
-              command('list')
-              wait_for(r'There are 2 of a max of \\d+ players online:.*BotOne.*BotTwo|There are 2 of a max of \\d+ players online:.*BotTwo.*BotOne', 20, regex=True)
-
+              command('bot create BotOne'); time.sleep(2); command('list')
+              wait_for(r'There are 1 of a max of \d+ players online:.*BotOne', 20, regex=True)
+              command('bot create BotTwo'); time.sleep(2); command('list')
+              wait_for(r'There are 2 of a max of \d+ players online:.*BotOne.*BotTwo|There are 2 of a max of \d+ players online:.*BotTwo.*BotOne', 20, regex=True)
               text = snapshot()
-              forbidden = [
-                  'Duplicate entity UUID',
-                  'Failed to validate profile key',
-                  'Mixin apply failed',
-                  'InjectionError',
-                  'InvalidMixinException',
-              ]
-              for token in forbidden:
-                  if token in text:
-                      raise AssertionError(f'forbidden server log token: {token}')
+              for token in ['Duplicate entity UUID','Failed to validate profile key','Mixin apply failed','InjectionError','InvalidMixinException']:
+                  if token in text: raise AssertionError(f'forbidden server log token: {token}')
               print('PLAYER COUNT INTEGRATION PASSED: 2 fake players counted by vanilla /list')
           finally:
               if proc.poll() is None:
-                  try:
-                      command('stop')
-                      proc.wait(timeout=20)
-                  except Exception:
-                      proc.kill()
-                      proc.wait(timeout=10)
-          if proc.returncode not in (0, None):
-              raise SystemExit(proc.returncode)
+                  try: command('stop'); proc.wait(timeout=20)
+                  except Exception: proc.kill(); proc.wait(timeout=10)
+          if proc.returncode not in (0, None): raise SystemExit(proc.returncode)
           PY
           timeout --signal=TERM --kill-after=15s 180s python3 /tmp/playerbots_server_test.py
-          grep -F 'PLAYER COUNT INTEGRATION PASSED' server-player-count.log || true
           ! grep -F 'Duplicate entity UUID' server-player-count.log
           ! grep -F 'Failed to validate profile key' server-player-count.log
 
@@ -237,8 +192,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          zip -qr player-bots-1.1.0-sources.zip . \
-            -x '.gradle/*' 'build/*' 'run/*' 'server-player-count.log' 'client-smoke.log' 'jar-contents.txt' 'built-mixins.json'
+          zip -qr player-bots-1.1.0-sources.zip . -x '.gradle/*' 'build/*' 'run/*' 'server-player-count.log' 'client-smoke.log' 'jar-contents.txt' 'built-mixins.json'
           test -f gradlew
           test -f gradlew.bat
           test -f gradle/wrapper/gradle-wrapper.jar
