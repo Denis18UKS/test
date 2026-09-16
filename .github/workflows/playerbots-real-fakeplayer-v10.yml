@@ -1,0 +1,258 @@
+name: Player Bots Real Fake Player CI v10
+on:
+  push:
+    branches: [chatgpt-playerbots-build-20260916]
+    paths:
+      - '.ci/playerbots-v11/trigger-v11'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.8'
+
+      - name: Restore verified 1.0.4 base and apply 1.1.0 architecture patch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat .ci/playerbots-src/chunk-* > /tmp/player-bots-v5-src.b64
+          base64 -d /tmp/player-bots-v5-src.b64 > /tmp/player-bots-v5-src.tgz
+          echo '0a4d7fd86b8b17795a99db95bd2a058c5c17e80af1bde69cffad3f90863436f3  /tmp/player-bots-v5-src.tgz' | sha256sum -c -
+          rm -rf work
+          mkdir -p work
+          tar -xzf /tmp/player-bots-v5-src.tgz -C work
+
+          cp .ci/playerbots-gui-fix/MinecraftClientMixin.java work/src/main/java/dev/denis/playerbots/mixin/MinecraftClientMixin.java
+          cp .ci/playerbots-toggle/BotRadialScreen.java work/src/main/java/dev/denis/playerbots/client/screen/BotRadialScreen.java
+          cp .ci/playerbots-body-anchor/PlayerBotsClient.java work/src/main/java/dev/denis/playerbots/client/PlayerBotsClient.java
+          cp .ci/playerbots-body-anchor/ClientBotState.java work/src/main/java/dev/denis/playerbots/client/ClientBotState.java
+          cp .ci/playerbots-body-anchor/PossessedBodyVisual.java work/src/main/java/dev/denis/playerbots/client/PossessedBodyVisual.java
+
+          cp .ci/playerbots-possession-v9/PossessionRouting.java work/src/main/java/dev/denis/playerbots/core/PossessionRouting.java
+          cp .ci/playerbots-possession-v9/PossessionManager.java work/src/main/java/dev/denis/playerbots/bot/PossessionManager.java
+          cp .ci/playerbots-possession-v9/EntityPushMixin.java work/src/main/java/dev/denis/playerbots/mixin/EntityPushMixin.java
+          cp .ci/playerbots-possession-v9/ControlledBotView.java work/src/main/java/dev/denis/playerbots/client/ControlledBotView.java
+          cp .ci/playerbots-possession-v9/PlayerEntityRendererMixin.java work/src/main/java/dev/denis/playerbots/mixin/PlayerEntityRendererMixin.java
+          cp .ci/playerbots-possession-v9/HeldItemRendererMixin.java work/src/main/java/dev/denis/playerbots/mixin/HeldItemRendererMixin.java
+          cp .ci/playerbots-possession-v9/playerbots.mixins.json work/src/main/resources/playerbots.mixins.json
+
+          cp .ci/playerbots-gui-fix/test_configurator_activation.py work/dev-tests/test_configurator_activation.py
+          cp .ci/playerbots-toggle/test_radial_toggle.py work/dev-tests/test_radial_toggle.py
+          cp .ci/playerbots-possession-v9/test_real_body_anchor.py work/dev-tests/test_real_body_anchor.py
+          cp .ci/playerbots-possession-v9/test_first_person_possession.py work/dev-tests/test_first_person_possession.py
+          cp .ci/playerbots-possession-v9/test_inventory_separation.py work/dev-tests/test_inventory_separation.py
+          cp .ci/playerbots-possession-v9/PlayerBotsCoreTests.java work/dev-tests/PlayerBotsCoreTests.java
+          sed -i 's/mod_version=1.0.0/mod_version=1.0.4/' work/gradle.properties
+
+          gzip -dc .ci/playerbots-v11/playerbots-v11.patch.gz | patch -p1 -E -d work
+          rm -f work/src/main/java/dev/denis/playerbots/client/PossessedBodyVisual.java
+          rm -f work/src/main/java/dev/denis/playerbots/mixin/EntityTrackerMixin.java
+          rm -f work/src/main/java/dev/denis/playerbots/mixin/ServerPlayNetworkHandlerAccessor.java
+
+          grep -Fx 'mod_version=1.1.0' work/gradle.properties
+          test ! -e work/src/main/java/dev/denis/playerbots/client/PossessedBodyVisual.java
+          test ! -e work/src/main/java/dev/denis/playerbots/mixin/EntityTrackerMixin.java
+          test ! -e work/src/main/java/dev/denis/playerbots/mixin/ServerPlayNetworkHandlerAccessor.java
+
+      - name: Run architecture regression and core tests
+        working-directory: work
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 dev-tests/test_configurator_activation.py
+          python3 dev-tests/test_radial_toggle.py
+          python3 dev-tests/test_fake_player_lifecycle.py
+          python3 dev-tests/test_possession_identity.py
+          python3 dev-tests/test_possession_packet_routing.py
+          python3 dev-tests/test_real_body_anchor.py
+          python3 dev-tests/test_first_person_possession.py
+          python3 dev-tests/test_inventory_separation.py
+          python3 dev-tests/test_minigame_player_count.py
+          python3 dev-tests/test_player_count_and_lan.py
+          rm -rf /tmp/playerbots-core-classes
+          mkdir -p /tmp/playerbots-core-classes
+          javac -d /tmp/playerbots-core-classes src/main/java/dev/denis/playerbots/core/*.java dev-tests/PlayerBotsCoreTests.java
+          java -cp /tmp/playerbots-core-classes PlayerBotsCoreTests
+
+      - name: Generate Gradle wrapper
+        working-directory: work
+        run: gradle wrapper --gradle-version 8.8
+
+      - name: Build remapped Fabric jar
+        working-directory: work
+        run: ./gradlew --stacktrace clean build
+
+      - name: Inspect 1.1.0 jar architecture
+        working-directory: work
+        shell: bash
+        run: |
+          set -euxo pipefail
+          JAR='build/libs/player-bots-1.1.0.jar'
+          test -f "$JAR"
+          jar tf "$JAR" > jar-contents.txt
+          for cls in \
+            'dev/denis/playerbots/bot/BotConnection.class' \
+            'dev/denis/playerbots/bot/PossessionManager.class' \
+            'dev/denis/playerbots/client/BotInputController.class' \
+            'dev/denis/playerbots/client/BotInventoryMirror.class' \
+            'dev/denis/playerbots/mixin/ClientConnectionAccessor.class' \
+            'dev/denis/playerbots/mixin/ServerPlayNetworkHandlerMixin.class' \
+            'dev/denis/playerbots/mixin/ClientPlayerInteractionManagerMixin.class' \
+            'dev/denis/playerbots/mixin/MinecraftClientMixin.class' \
+            'dev/denis/playerbots/mixin/HeldItemRendererMixin.class' \
+            'dev/denis/playerbots/mixin/PlayerEntityRendererMixin.class' \
+            'dev/denis/playerbots/mixin/EntityPushMixin.class' \
+            'playerbots.mixins.json' \
+            'fabric.mod.json'; do
+            grep -Fx "$cls" jar-contents.txt
+          done
+          ! grep -Fq 'dev/denis/playerbots/client/PossessedBodyVisual.class' jar-contents.txt
+          ! grep -Fq 'dev/denis/playerbots/mixin/EntityTrackerMixin.class' jar-contents.txt
+          ! grep -Fq 'dev/denis/playerbots/mixin/ServerPlayNetworkHandlerAccessor.class' jar-contents.txt
+          unzip -p "$JAR" playerbots.mixins.json > built-mixins.json
+          grep -F 'ClientConnectionAccessor' built-mixins.json
+          grep -F 'ServerPlayNetworkHandlerMixin' built-mixins.json
+          grep -F 'ClientPlayerInteractionManagerMixin' built-mixins.json
+          ! grep -Fq 'EntityTrackerMixin' built-mixins.json
+          ! grep -Fq 'ServerPlayNetworkHandlerAccessor' built-mixins.json
+
+      - name: Dedicated server fake-player player-count integration test
+        working-directory: work
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p run
+          echo 'eula=true' > run/eula.txt
+          cat > /tmp/playerbots_server_test.py <<'PY'
+          import os, re, subprocess, sys, threading, time
+
+          log_path = 'server-player-count.log'
+          proc = subprocess.Popen(
+              ['./gradlew', 'runServer', '--no-daemon'],
+              stdin=subprocess.PIPE,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.STDOUT,
+              text=True,
+              bufsize=1,
+          )
+          lines = []
+          lock = threading.Lock()
+
+          def reader():
+              with open(log_path, 'w', encoding='utf-8') as out:
+                  for line in proc.stdout:
+                      sys.stdout.write(line)
+                      out.write(line)
+                      out.flush()
+                      with lock:
+                          lines.append(line)
+
+          threading.Thread(target=reader, daemon=True).start()
+
+          def snapshot():
+              with lock:
+                  return ''.join(lines)
+
+          def wait_for(pattern, timeout, regex=False):
+              end = time.time() + timeout
+              while time.time() < end:
+                  text = snapshot()
+                  if (re.search(pattern, text) if regex else pattern in text):
+                      return text
+                  if proc.poll() is not None:
+                      raise RuntimeError(f'server exited early with {proc.returncode}')
+                  time.sleep(0.25)
+              raise TimeoutError(f'timed out waiting for: {pattern}\n--- log tail ---\n{snapshot()[-8000:]}')
+
+          def command(cmd):
+              assert proc.stdin is not None
+              proc.stdin.write(cmd + '\n')
+              proc.stdin.flush()
+
+          try:
+              wait_for('Done (', 120)
+              command('bot create BotOne')
+              time.sleep(2)
+              command('list')
+              wait_for(r'There are 1 of a max of \\d+ players online:.*BotOne', 20, regex=True)
+
+              command('bot create BotTwo')
+              time.sleep(2)
+              command('list')
+              wait_for(r'There are 2 of a max of \\d+ players online:.*BotOne.*BotTwo|There are 2 of a max of \\d+ players online:.*BotTwo.*BotOne', 20, regex=True)
+
+              text = snapshot()
+              forbidden = [
+                  'Duplicate entity UUID',
+                  'Failed to validate profile key',
+                  'Mixin apply failed',
+                  'InjectionError',
+                  'InvalidMixinException',
+              ]
+              for token in forbidden:
+                  if token in text:
+                      raise AssertionError(f'forbidden server log token: {token}')
+              print('PLAYER COUNT INTEGRATION PASSED: 2 fake players counted by vanilla /list')
+          finally:
+              if proc.poll() is None:
+                  try:
+                      command('stop')
+                      proc.wait(timeout=20)
+                  except Exception:
+                      proc.kill()
+                      proc.wait(timeout=10)
+          if proc.returncode not in (0, None):
+              raise SystemExit(proc.returncode)
+          PY
+          timeout --signal=TERM --kill-after=15s 180s python3 /tmp/playerbots_server_test.py
+          grep -F 'PLAYER COUNT INTEGRATION PASSED' server-player-count.log || true
+          ! grep -F 'Duplicate entity UUID' server-player-count.log
+          ! grep -F 'Failed to validate profile key' server-player-count.log
+
+      - name: Client startup smoke test
+        working-directory: work
+        shell: bash
+        run: |
+          set -euxo pipefail
+          command -v xvfb-run
+          set +e
+          timeout --signal=TERM --kill-after=10s 120s xvfb-run -a ./gradlew runClient --no-daemon > client-smoke.log 2>&1
+          code=$?
+          set -e
+          cat client-smoke.log
+          if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then exit "$code"; fi
+          if grep -E 'Mixin apply failed|InjectionError|InvalidMixinException|NoSuchMethodError|NoSuchFieldError|ClassCastException' client-smoke.log; then exit 1; fi
+          grep -F 'Setting user:' client-smoke.log
+
+      - name: Package 1.1.0 sources
+        working-directory: work
+        shell: bash
+        run: |
+          set -euxo pipefail
+          zip -qr player-bots-1.1.0-sources.zip . \
+            -x '.gradle/*' 'build/*' 'run/*' 'server-player-count.log' 'client-smoke.log' 'jar-contents.txt' 'built-mixins.json'
+          test -f gradlew
+          test -f gradlew.bat
+          test -f gradle/wrapper/gradle-wrapper.jar
+          unzip -t player-bots-1.1.0-sources.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: player-bots-real-fakeplayer-v1.1.0
+          if-no-files-found: error
+          path: |
+            work/build/libs/player-bots-1.1.0.jar
+            work/build/libs/player-bots-1.1.0-sources.jar
+            work/player-bots-1.1.0-sources.zip
+            work/server-player-count.log
+            work/client-smoke.log
+            work/jar-contents.txt
+            work/built-mixins.json
