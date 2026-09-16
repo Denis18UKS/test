@@ -52,7 +52,7 @@ jobs:
           cp .ci/playerbots-possession-v9/PlayerBotsCoreTests.java work/dev-tests/PlayerBotsCoreTests.java
           sed -i 's/mod_version=1.0.0/mod_version=1.0.4/' work/gradle.properties
 
-          gzip -dc .ci/playerbots-v11/playerbots-v11.patch.gz | patch -p1 -E -d work
+          base64 -d .ci/playerbots-v11/playerbots-v11.patch.gz.b64 | gzip -dc | patch -p1 -E -d work
           rm -f work/src/main/java/dev/denis/playerbots/client/PossessedBodyVisual.java
           rm -f work/src/main/java/dev/denis/playerbots/mixin/EntityTrackerMixin.java
           rm -f work/src/main/java/dev/denis/playerbots/mixin/ServerPlayNetworkHandlerAccessor.java
