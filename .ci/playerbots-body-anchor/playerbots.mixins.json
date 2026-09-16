@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "package": "dev.denis.playerbots.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "ServerPlayNetworkHandlerAccessor",
+    "EntityTrackerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "client": [
+    "MinecraftClientMixin",
+    "PlayerEntityRendererMixin"
+  ]
+}
