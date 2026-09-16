@@ -1,0 +1,295 @@
+name: Player Bots Final CI Build
+on:
+  push:
+    branches: [chatgpt-playerbots-build-20260916]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.8'
+
+      - name: Restore previously verified source snapshot
+        shell: bash
+        run: |
+          mkdir -p work
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, re, tarfile
+          workflow = Path('.github/workflows/playerbots-build.yml').read_text()
+          match = re.search(r"echo '([^']+)' \\| base64 -d", workflow)
+          if not match:
+              raise SystemExit('Could not locate baseline source payload')
+          archive = Path('/tmp/playerbots-src.tgz')
+          archive.write_bytes(base64.b64decode(match.group(1)))
+          with tarfile.open(archive, 'r:gz') as tf:
+              tf.extractall('work')
+          PY
+
+      - name: Apply final possession hardening
+        shell: bash
+        run: |
+          cat > /tmp/playerbots-final.patch <<'PATCH'
+diff --git a/dev-tests/PlayerBotsCoreTests.java b/dev-tests/PlayerBotsCoreTests.java
+index 536e55a..06eaa83 100644
+--- a/dev-tests/PlayerBotsCoreTests.java
++++ b/dev-tests/PlayerBotsCoreTests.java
+@@ -4,6 +4,7 @@ public final class PlayerBotsCoreTests {
+     public static void main(String[] args) throws Exception {
+         testNameRules();
+         testRadialSelection();
++        testPossessionRouting();
+         System.out.println("CORE TESTS PASSED");
+     }
+ 
+@@ -32,6 +33,24 @@ public final class PlayerBotsCoreTests {
+         expect((int) sector.invoke(null, 0.0, -100.0, 20.0, 0) == -1, "zero sectors must return -1");
+     }
+ 
++    private static void testPossessionRouting() throws Exception {
++        Class<?> routing;
++        try { routing = Class.forName("dev.denis.playerbots.core.PossessionRouting"); }
++        catch (ClassNotFoundException e) { throw new AssertionError("PossessionRouting production class is missing"); }
++        Method suppress = routing.getMethod("shouldSuppressTracking", java.util.UUID.class, java.util.UUID.class, java.util.Map.class);
++        java.util.UUID controller = java.util.UUID.randomUUID();
++        java.util.UUID bot = java.util.UUID.randomUUID();
++        java.util.UUID other = java.util.UUID.randomUUID();
++        java.util.Map<java.util.UUID, java.util.UUID> ownerByControlled = new java.util.HashMap<>();
++        ownerByControlled.put(bot, controller);
++        expect((boolean) suppress.invoke(null, controller, bot, ownerByControlled), "controller body must be hidden from its possessed bot client");
++        expect(!(boolean) suppress.invoke(null, other, bot, ownerByControlled), "unrelated entity must not be hidden");
++        expect(!(boolean) suppress.invoke(null, controller, other, ownerByControlled), "unrelated recipient must not hide controller");
++        Method bridge = routing.getMethod("needsWorldBridge", String.class, String.class);
++        expect((boolean) bridge.invoke(null, "minecraft:overworld", "minecraft:the_nether"), "different dimensions need a bridge");
++        expect(!(boolean) bridge.invoke(null, "minecraft:overworld", "minecraft:overworld"), "same dimension must not need a bridge");
++    }
++
+     private static void expect(boolean condition, String message) {
+         if (!condition) throw new AssertionError(message);
+     }
+diff --git a/src/main/java/dev/denis/playerbots/bot/PossessionManager.java b/src/main/java/dev/denis/playerbots/bot/PossessionManager.java
+index 4540db2..5e50eb5 100644
+--- a/src/main/java/dev/denis/playerbots/bot/PossessionManager.java
++++ b/src/main/java/dev/denis/playerbots/bot/PossessionManager.java
+@@ -1,9 +1,12 @@
+ package dev.denis.playerbots.bot;
+ 
++import dev.denis.playerbots.core.PossessionRouting;
+ import dev.denis.playerbots.mixin.ServerPlayNetworkHandlerAccessor;
++import net.minecraft.entity.Entity;
+ import net.minecraft.server.MinecraftServer;
+ import net.minecraft.server.network.ServerPlayNetworkHandler;
+ import net.minecraft.server.network.ServerPlayerEntity;
++import net.minecraft.server.world.ServerWorld;
+ 
+ import java.util.HashMap;
+ import java.util.Map;
+@@ -43,6 +46,10 @@ public final class PossessionManager {
+         return controllerId.equals(controllerByControlled.get(botId));
+     }
+ 
++    public boolean shouldSuppressTracking(Entity trackedEntity, ServerPlayerEntity recipient) {
++        return PossessionRouting.shouldSuppressTracking(trackedEntity.getUuid(), recipient.getUuid(), controllerByControlled);
++    }
++
+     public boolean control(ServerPlayerEntity packetPlayer, ServerPlayerEntity target) {
+         ServerPlayerEntity controller = controllerOf(packetPlayer);
+         if (controller.getUuid().equals(target.getUuid())) return false;
+@@ -53,12 +60,14 @@ public final class PossessionManager {
+         if (current == null) current = controller;
+         if (current.getUuid().equals(target.getUuid())) return true;
+ 
++        ReturnPoint returnPoint = bridgeTargetIntoCurrentWorld(current, target);
+         swapHandlers(current, target);
+         if (!current.getUuid().equals(controller.getUuid())) {
+             controllerByControlled.remove(current.getUuid());
+         }
+         controlledByController.put(controller.getUuid(), target.getUuid());
+         controllerByControlled.put(target.getUuid(), controller.getUuid());
++        restoreTargetWorld(target, returnPoint);
+         syncClient(target);
+         return true;
+     }
+@@ -68,9 +77,11 @@ public final class PossessionManager {
+         ServerPlayerEntity current = controlledBy(controller);
+         if (current == null) return false;
+ 
++        ReturnPoint returnPoint = bridgeTargetIntoCurrentWorld(current, controller);
+         swapHandlers(current, controller);
+         controlledByController.remove(controller.getUuid());
+         controllerByControlled.remove(current.getUuid());
++        restoreTargetWorld(controller, returnPoint);
+         syncClient(controller);
+         return true;
+     }
+@@ -89,6 +100,22 @@ public final class PossessionManager {
+         if (controllerId != null) releaseController(controllerId);
+     }
+ 
++    private ReturnPoint bridgeTargetIntoCurrentWorld(ServerPlayerEntity current, ServerPlayerEntity target) {
++        String currentDimension = current.getServerWorld().getRegistryKey().getValue().toString();
++        String targetDimension = target.getServerWorld().getRegistryKey().getValue().toString();
++        if (!PossessionRouting.needsWorldBridge(currentDimension, targetDimension)) return null;
++
++        ReturnPoint original = new ReturnPoint(target.getServerWorld(), target.getX(), target.getY(), target.getZ(),
++                target.getYaw(), target.getPitch());
++        target.teleport(current.getServerWorld(), target.getX(), target.getY(), target.getZ(), target.getYaw(), target.getPitch());
++        return original;
++    }
++
++    private static void restoreTargetWorld(ServerPlayerEntity target, ReturnPoint point) {
++        if (point == null) return;
++        target.teleport(point.world(), point.x(), point.y(), point.z(), point.yaw(), point.pitch());
++    }
++
+     private static void swapHandlers(ServerPlayerEntity a, ServerPlayerEntity b) {
+         ServerPlayNetworkHandler aHandler = a.networkHandler;
+         ServerPlayNetworkHandler bHandler = b.networkHandler;
+@@ -101,11 +128,12 @@ public final class PossessionManager {
+     }
+ 
+     private void syncClient(ServerPlayerEntity player) {
+-        // Re-send the most important player-owned state after swapping bodies.
+         player.networkHandler.syncWithPlayerPosition();
+         player.networkHandler.requestTeleport(player.getX(), player.getY(), player.getZ(), player.getYaw(), player.getPitch());
+         player.sendAbilitiesUpdate();
+         player.playerScreenHandler.syncState();
+         server.getPlayerManager().sendPlayerStatus(player);
+     }
++
++    private record ReturnPoint(ServerWorld world, double x, double y, double z, float yaw, float pitch) {}
+ }
+diff --git a/src/main/java/dev/denis/playerbots/core/PossessionRouting.java b/src/main/java/dev/denis/playerbots/core/PossessionRouting.java
+new file mode 100644
+index 0000000..16bc599
+--- /dev/null
++++ b/src/main/java/dev/denis/playerbots/core/PossessionRouting.java
+@@ -0,0 +1,20 @@
++package dev.denis.playerbots.core;
++
++import java.util.Map;
++import java.util.Objects;
++import java.util.UUID;
++
++public final class PossessionRouting {
++    private PossessionRouting() {}
++
++    public static boolean shouldSuppressTracking(UUID trackedEntityId, UUID recipientId,
++                                                 Map<UUID, UUID> controllerByControlled) {
++        if (trackedEntityId == null || recipientId == null || controllerByControlled == null) return false;
++        UUID controllerId = controllerByControlled.get(recipientId);
++        return trackedEntityId.equals(controllerId);
++    }
++
++    public static boolean needsWorldBridge(String currentDimensionId, String targetDimensionId) {
++        return !Objects.equals(currentDimensionId, targetDimensionId);
++    }
++}
+diff --git a/src/main/java/dev/denis/playerbots/mixin/EntityTrackerMixin.java b/src/main/java/dev/denis/playerbots/mixin/EntityTrackerMixin.java
+new file mode 100644
+index 0000000..2364aa8
+--- /dev/null
++++ b/src/main/java/dev/denis/playerbots/mixin/EntityTrackerMixin.java
+@@ -0,0 +1,28 @@
++package dev.denis.playerbots.mixin;
++
++import dev.denis.playerbots.PlayerBotsMod;
++import net.minecraft.entity.Entity;
++import net.minecraft.server.network.ServerPlayerEntity;
++import org.spongepowered.asm.mixin.Final;
++import org.spongepowered.asm.mixin.Mixin;
++import org.spongepowered.asm.mixin.Shadow;
++import org.spongepowered.asm.mixin.injection.At;
++import org.spongepowered.asm.mixin.injection.Inject;
++import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
++
++@Mixin(targets = "net.minecraft.server.world.ThreadedAnvilChunkStorage$EntityTracker")
++public abstract class EntityTrackerMixin {
++    @Shadow @Final Entity entity;
++
++    @Inject(
++            method = "updateTrackedStatus(Lnet/minecraft/server/network/ServerPlayerEntity;)V",
++            at = @At("HEAD"),
++            cancellable = true
++    )
++    private void playerbots$hideControllerBodyFromPossessedClient(ServerPlayerEntity player, CallbackInfo ci) {
++        if (PlayerBotsMod.manager() != null
++                && PlayerBotsMod.manager().possession().shouldSuppressTracking(entity, player)) {
++            ci.cancel();
++        }
++    }
++}
+diff --git a/src/main/resources/playerbots.mixins.json b/src/main/resources/playerbots.mixins.json
+index 5faa776..fe5d43a 100644
+--- a/src/main/resources/playerbots.mixins.json
++++ b/src/main/resources/playerbots.mixins.json
+@@ -2,6 +2,6 @@
+   "required": true,
+   "package": "dev.denis.playerbots.mixin",
+   "compatibilityLevel": "JAVA_17",
+-  "mixins": ["ServerPlayNetworkHandlerAccessor"],
++  "mixins": ["ServerPlayNetworkHandlerAccessor", "EntityTrackerMixin"],
+   "injectors": { "defaultRequire": 1 }
+ }
+PATCH
+          cd work
+          git apply /tmp/playerbots-final.patch
+
+      - name: Run core behavior tests
+        working-directory: work
+        run: |
+          rm -rf /tmp/playerbots-core-classes
+          mkdir -p /tmp/playerbots-core-classes
+          javac -d /tmp/playerbots-core-classes src/main/java/dev/denis/playerbots/core/*.java dev-tests/PlayerBotsCoreTests.java
+          java -cp /tmp/playerbots-core-classes PlayerBotsCoreTests
+
+      - name: Generate Gradle wrapper
+        working-directory: work
+        run: gradle wrapper --gradle-version 8.8
+
+      - name: Build remapped Fabric jar
+        working-directory: work
+        run: ./gradlew --stacktrace clean build
+
+      - name: Inspect jar contents
+        working-directory: work
+        run: |
+          test -f build/libs/player-bots-1.0.0.jar
+          jar tf build/libs/player-bots-1.0.0.jar | grep -q '^fabric.mod.json$'
+          jar tf build/libs/player-bots-1.0.0.jar | grep -q 'dev/denis/playerbots/bot/PossessionManager.class'
+          jar tf build/libs/player-bots-1.0.0.jar | grep -q 'dev/denis/playerbots/mixin/EntityTrackerMixin.class'
+          jar tf build/libs/player-bots-1.0.0.jar | grep -q '^playerbots.mixins.json$'
+
+      - name: Dedicated server startup smoke test
+        working-directory: work
+        shell: bash
+        run: |
+          mkdir -p run
+          echo 'eula=true' > run/eula.txt
+          set +e
+          timeout 45s ./gradlew runServer --no-daemon > server-smoke.log 2>&1
+          code=$?
+          set -e
+          cat server-smoke.log
+          if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then exit "$code"; fi
+          grep -q 'Done (' server-smoke.log
+
+      - name: Package sources
+        working-directory: work
+        run: zip -qr player-bots-1.0.0-sources.zip . -x '.gradle/*' 'build/*' 'run/*' 'server-smoke.log'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: player-bots-final-build
+          if-no-files-found: error
+          path: |
+            work/build/libs/player-bots-1.0.0.jar
+            work/build/libs/player-bots-1.0.0-sources.jar
+            work/player-bots-1.0.0-sources.zip
