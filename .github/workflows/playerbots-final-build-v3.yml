@@ -1,0 +1,94 @@
+name: Player Bots Final CI Build v3
+on:
+  push:
+    branches: [chatgpt-playerbots-build-20260916]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.8'
+
+      - name: Restore verified baseline and final patch
+        shell: bash
+        run: |
+          rm -rf work
+          mkdir -p work
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, tarfile
+
+          baseline_text = Path('.github/workflows/playerbots-build.yml').read_text()
+          baseline_line = next(line for line in baseline_text.splitlines() if "base64 -d > /tmp/playerbots-src.tgz" in line)
+          baseline_payload = baseline_line.split("echo '", 1)[1].split("' | base64 -d", 1)[0]
+          archive = Path('/tmp/playerbots-src.tgz')
+          archive.write_bytes(base64.b64decode(baseline_payload))
+          with tarfile.open(archive, 'r:gz') as tf:
+              tf.extractall('work')
+
+          patch_text = Path('.github/workflows/playerbots-final-build-v2.yml').read_text()
+          patch_line = next(line for line in patch_text.splitlines() if "base64 -d > /tmp/playerbots-final.patch" in line)
+          patch_payload = patch_line.split("echo '", 1)[1].split("' | base64 -d", 1)[0]
+          Path('/tmp/playerbots-final.patch').write_bytes(base64.b64decode(patch_payload))
+          PY
+          cd work
+          git apply /tmp/playerbots-final.patch
+
+      - name: Run core behavior tests
+        working-directory: work
+        run: |
+          rm -rf /tmp/playerbots-core-classes
+          mkdir -p /tmp/playerbots-core-classes
+          javac -d /tmp/playerbots-core-classes src/main/java/dev/denis/playerbots/core/*.java dev-tests/PlayerBotsCoreTests.java
+          java -cp /tmp/playerbots-core-classes PlayerBotsCoreTests
+
+      - name: Generate Gradle wrapper
+        working-directory: work
+        run: gradle wrapper --gradle-version 8.8
+
+      - name: Build remapped Fabric jar
+        working-directory: work
+        run: ./gradlew --stacktrace clean build
+
+      - name: Inspect jar contents
+        working-directory: work
+        run: |
+          test -f build/libs/player-bots-1.0.0.jar
+          jar tf build/libs/player-bots-1.0.0.jar | grep -q '^fabric.mod.json$'
+          jar tf build/libs/player-bots-1.0.0.jar | grep -q 'dev/denis/playerbots/bot/PossessionManager.class'
+          jar tf build/libs/player-bots-1.0.0.jar | grep -q 'dev/denis/playerbots/mixin/EntityTrackerMixin.class'
+          jar tf build/libs/player-bots-1.0.0.jar | grep -q '^playerbots.mixins.json$'
+
+      - name: Dedicated server startup smoke test
+        working-directory: work
+        shell: bash
+        run: |
+          mkdir -p run
+          echo 'eula=true' > run/eula.txt
+          set +e
+          timeout 45s ./gradlew runServer --no-daemon > server-smoke.log 2>&1
+          code=$?
+          set -e
+          cat server-smoke.log
+          if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then exit "$code"; fi
+          grep -q 'Done (' server-smoke.log
+
+      - name: Package sources
+        working-directory: work
+        run: zip -qr player-bots-1.0.0-sources.zip . -x '.gradle/*' 'build/*' 'run/*' 'server-smoke.log'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: player-bots-final-build-v3
+          if-no-files-found: error
+          path: |
+            work/build/libs/player-bots-1.0.0.jar
+            work/build/libs/player-bots-1.0.0-sources.jar
+            work/player-bots-1.0.0-sources.zip
