@@ -1,0 +1,70 @@
+diff --git a/dev-tests/test_bot_control.py b/dev-tests/test_bot_control.py
+new file mode 100644
+index 0000000..59bc0dd
+--- /dev/null
++++ b/dev-tests/test_bot_control.py
+@@ -0,0 +1,12 @@
++from pathlib import Path
++root = Path(__file__).resolve().parents[1]
++server = (root/'src/main/java/dev/denis/playerbots/mixin/ServerPlayNetworkHandlerMixin.java').read_text()
++network = (root/'src/main/java/dev/denis/playerbots/network/PlayerBotsNetworking.java').read_text()
++inputc = (root/'src/main/java/dev/denis/playerbots/client/BotInputController.java').read_text()
++
++assert 'packet.apply(bot.networkHandler)' in server
++assert 'BOT_INPUT' in network
++assert 'ClientPlayNetworking.send(PlayerBotsNetworking.BOT_INPUT' in inputc
++assert 'client.options.forwardKey' in inputc and 'client.options.backKey' in inputc
++assert 'client.player.setVelocity(Vec3d.ZERO)' in inputc
++print('BOT CONTROL REGRESSION TEST PASSED')
++diff --git a/dev-tests/test_inventory_authoritative.py b/dev-tests/test_inventory_authoritative.py
++new file mode 100644
++index 0000000..a79d36b
++--- /dev/null
+++++ b/dev-tests/test_inventory_authoritative.py
++@@ -0,0 +1,18 @@
++from pathlib import Path
++import json
++root = Path(__file__).resolve().parents[1]
++mirror = (root / 'src/main/java/dev/denis/playerbots/client/BotInventoryMirror.java').read_text()
++screen = (root / 'src/main/java/dev/denis/playerbots/client/screen/BotInventoryScreen.java').read_text()
++network = (root / 'src/main/java/dev/denis/playerbots/network/PlayerBotsNetworking.java').read_text()
++mc = (root / 'src/main/java/dev/denis/playerbots/mixin/MinecraftClientMixin.java').read_text()
++mixins = json.loads((root / 'src/main/resources/playerbots.mixins.json').read_text())
++
++assert 'realPlayerSnapshot' not in mirror
++assert 'applyState(client, state)' not in mirror
++assert 'client.player.getInventory()' not in mirror
++assert 'extends HandledScreen<PlayerScreenHandler>' in screen
++assert 'BotInputController.clickInventory' in screen
++assert 'for (int slot = 1; slot <= 4; slot++) out.writeItemStack' in network
++assert 'BotInventoryScreen' in mc
++assert 'InventoryScreenMixin' not in mixins.get('client', [])
++print('INVENTORY AUTHORITATIVE REGRESSION TEST PASSED')
++diff --git a/dev-tests/test_inventory_separation.py b/dev-tests/test_inventory_separation.py
++index 708aa2b..c197ec4 100644
++--- a/dev-tests/test_inventory_separation.py
+++++ b/dev-tests/test_inventory_separation.py
++@@ -1,19 +1,13 @@
++ from pathlib import Path
++ import json
++ root = Path(__file__).resolve().parents[1]
++-possession = (root/'src/main/java/dev/denis/playerbots/bot/PossessionManager.java').read_text()
++-manager = (root/'src/main/java/dev/denis/playerbots/bot/BotManager.java').read_text()
++ network = (root/'src/main/java/dev/denis/playerbots/network/PlayerBotsNetworking.java').read_text()
++-mirror = (root/'src/main/java/dev/denis/playerbots/client/BotInventoryMirror.java').read_text()
++ server = (root/'src/main/java/dev/denis/playerbots/mixin/ServerPlayNetworkHandlerMixin.java').read_text()
++ conn = (root/'src/main/java/dev/denis/playerbots/bot/BotConnection.java').read_text()
++ mixins = json.loads((root/'src/main/resources/playerbots.mixins.json').read_text())
++-for forbidden in ['copyInventory', 'cloneInventory', 'target.getInventory().clone', 'controller.getInventory().clone']:
++-    assert forbidden not in possession + manager
++-assert 'BOT_STATE' in network
++-assert 'bot.getInventory().main' in network and 'bot.getInventory().armor' in network and 'bot.getInventory().offHand' in network
++-assert 'realPlayerSnapshot' in mirror
+++for packet in ['OpenScreenS2CPacket','CloseScreenS2CPacket','InventoryS2CPacket','ScreenHandlerSlotUpdateS2CPacket','ScreenHandlerPropertyUpdateS2CPacket','SetTradeOffersS2CPacket']:
+++    assert packet in conn
+++assert 'BOT_INVENTORY_CLICK' in network
++ assert 'onClickSlot' in server and 'packet.apply(bot.networkHandler)' in server
++-assert 'InventoryS2CPacket' in conn and 'ScreenHandlerSlotUpdateS2CPacket' in conn
++-assert 'ClientPlayerInteractionManagerMixin' not in mixins.get('client', [])
+++assert 'InventoryScreenMixin' not in mixins.get('client', [])
++ print('INVENTORY SEPARATION REGRESSION TEST PASSED')
