@@ -67,6 +67,7 @@ jobs:
         run: |
           python -c "import base64,glob; s=''.join(open(p,encoding='utf-8').read().strip() for p in sorted(glob.glob('aurox-ci/part*'))); open('aurox-src.zip','wb').write(base64.b64decode(s))"
           unzip -q aurox-src.zip
+          printf 'android.useAndroidX=true\nandroid.enableJetifier=true\n' > aurox/android/gradle.properties
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -125,6 +126,12 @@ jobs:
         run: |
           python -c "import base64,glob; s=''.join(open(p,encoding='utf-8').read().strip() for p in sorted(glob.glob('aurox-ci/part*'))); open('aurox-src.zip','wb').write(base64.b64decode(s))"
           unzip -q aurox-src.zip
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('aurox/ios/AuroxBrowser/BrowserView.swift')
+          s=p.read_text()
+          p.write_text(s.replace('s.contains(".")&&!s.contains(" ")','s.contains(".") && !s.contains(" ")'))
+          PY
       - name: Install XcodeGen
         run: brew install xcodegen
       - name: Prepare icon and project
