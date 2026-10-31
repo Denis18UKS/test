@@ -3,6 +3,8 @@ name: Build Aurox Browser
 on:
   push:
     branches: ["aurox-build"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
