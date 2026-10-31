@@ -63,11 +63,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Reconstruct source archive
+      - name: Reconstruct and patch Android source
         run: |
           python -c "import base64,glob; s=''.join(open(p,encoding='utf-8').read().strip() for p in sorted(glob.glob('aurox-ci/part*'))); open('aurox-src.zip','wb').write(base64.b64decode(s))"
           unzip -q aurox-src.zip
           printf 'android.useAndroidX=true\nandroid.enableJetifier=true\n' > aurox/android/gradle.properties
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('aurox/android/app/build.gradle.kts')
+          s=p.read_text()
+          if 'compileOptions {' not in s:
+              s=s.replace('    buildFeatures { buildConfig = true }\n', '    buildFeatures { buildConfig = true }\n    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }\n')
+          if 'kotlin { jvmToolchain(17) }' not in s:
+              s += '\nkotlin { jvmToolchain(17) }\n'
+          p.write_text(s)
+          PY
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
