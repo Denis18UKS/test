@@ -1,0 +1,139 @@
+name: Build Aurox Browser
+
+on:
+  push:
+    branches: ["aurox-build"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows EXE
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reconstruct source archive
+        shell: pwsh
+        run: |
+          python -c "import base64,glob; s=''.join(open(p,encoding='utf-8').read().strip() for p in sorted(glob.glob('aurox-ci/part*'))); open('aurox-src.zip','wb').write(base64.b64decode(s))"
+          Expand-Archive -Path aurox-src.zip -DestinationPath . -Force
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Generate icon
+        working-directory: aurox
+        shell: pwsh
+        run: |
+          python -m pip install pillow
+          python tools/make_icon.py --out desktop/build/icon.png --ico desktop/build/icon.ico
+      - name: Install dependencies and test
+        working-directory: aurox/desktop
+        run: |
+          npm install
+          npm test
+      - name: Download Xray
+        working-directory: aurox/desktop
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force vendor/xray | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/XTLS/Xray-core/releases/download/v26.10.21/Xray-windows-64.zip" -OutFile xray.zip
+          Expand-Archive xray.zip -DestinationPath xray-unpacked -Force
+          Copy-Item xray-unpacked/xray.exe vendor/xray/xray.exe
+      - name: Build installer
+        working-directory: aurox/desktop
+        run: npm run dist:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Aurox-Windows
+          path: aurox/desktop/release/*.exe
+          if-no-files-found: error
+
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reconstruct source archive
+        run: |
+          python -c "import base64,glob; s=''.join(open(p,encoding='utf-8').read().strip() for p in sorted(glob.glob('aurox-ci/part*'))); open('aurox-src.zip','wb').write(base64.b64decode(s))"
+          unzip -q aurox-src.zip
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Generate icon
+        working-directory: aurox/android
+        run: |
+          python -m pip install pillow
+          python ../tools/make_icon.py --out /tmp/aurox-icon.png
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          cp /tmp/aurox-icon.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+      - name: Download Xray arm64
+        working-directory: aurox/android
+        run: |
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          curl -L --fail -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v26.10.21/Xray-android-arm64-v8a.zip"
+          mkdir -p /tmp/xraybin
+          unzip -j /tmp/xray.zip xray -d /tmp/xraybin
+          mv /tmp/xraybin/xray app/src/main/jniLibs/arm64-v8a/libxray.so
+          chmod +x app/src/main/jniLibs/arm64-v8a/libxray.so
+      - name: Build APK
+        working-directory: aurox/android
+        run: gradle :app:assembleDebug --stacktrace
+      - name: Rename APK
+        working-directory: aurox/android
+        run: cp app/build/outputs/apk/debug/app-debug.apk AuroxBrowser-Android-arm64.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Aurox-Android
+          path: aurox/android/AuroxBrowser-Android-arm64.apk
+          if-no-files-found: error
+
+  ios:
+    name: iOS unsigned IPA
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reconstruct source archive
+        run: |
+          python -c "import base64,glob; s=''.join(open(p,encoding='utf-8').read().strip() for p in sorted(glob.glob('aurox-ci/part*'))); open('aurox-src.zip','wb').write(base64.b64decode(s))"
+          unzip -q aurox-src.zip
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Prepare icon and project
+        working-directory: aurox/ios
+        run: |
+          python -m pip install pillow
+          python ../tools/make_icon.py --out AuroxBrowser/Assets.xcassets/AppIcon.appiconset/icon-1024.png
+          xcodegen generate
+      - name: Build unsigned app
+        working-directory: aurox/ios
+        run: xcodebuild -project AuroxBrowser.xcodeproj -scheme AuroxBrowser -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+      - name: Package unsigned IPA
+        working-directory: aurox/ios
+        run: |
+          mkdir -p Payload
+          cp -R "build/Build/Products/Release-iphoneos/Aurox Browser.app" Payload/
+          zip -qry AuroxBrowser-iOS-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Aurox-iOS-unsigned
+          path: aurox/ios/AuroxBrowser-iOS-unsigned.ipa
+          if-no-files-found: error
