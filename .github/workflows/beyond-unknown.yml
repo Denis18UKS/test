@@ -25,11 +25,11 @@ jobs:
       - name: Archive source
         run: |
           cd beyond_unknown
-          zip -r ../BeyondTheUnknown-0.1.0-alpha-Source.zip src build.gradle settings.gradle README.md generate_project.py
+          zip -r ../BeyondTheUnknown-0.2.0-alpha-Source.zip src build.gradle settings.gradle README.md generate_project.py
       - uses: actions/upload-artifact@v4
         with:
           name: BeyondTheUnknown-source
-          path: BeyondTheUnknown-0.1.0-alpha-Source.zip
+          path: BeyondTheUnknown-0.2.0-alpha-Source.zip
       - name: Compile
         working-directory: beyond_unknown
         run: gradle --no-daemon build
