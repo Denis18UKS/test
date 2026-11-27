@@ -1,0 +1,40 @@
+name: Beyond the Unknown prototype
+on:
+  push:
+    branches: ['beyond-the-unknown/prototype-0.1']
+    paths: ['beyond_unknown/**', '.github/workflows/beyond-unknown.yml']
+  pull_request:
+    paths: ['beyond_unknown/**', '.github/workflows/beyond-unknown.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+      - name: Generate source project
+        run: python3 beyond_unknown/generate_project.py
+      - name: Archive source
+        run: |
+          cd beyond_unknown
+          zip -r ../BeyondTheUnknown-0.2.0-alpha-Source.zip src build.gradle settings.gradle README.md generate_project.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BeyondTheUnknown-source
+          path: BeyondTheUnknown-0.2.0-alpha-Source.zip
+      - name: Compile
+        working-directory: beyond_unknown
+        run: gradle --no-daemon build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BeyondTheUnknown-jar
+          path: beyond_unknown/build/libs/*.jar
+          if-no-files-found: error
