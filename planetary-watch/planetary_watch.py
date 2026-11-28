@@ -101,6 +101,7 @@ class Monitor:
    data=self.get(s); at=stamp()
    with self.lock:
     old=self.data.get(s); changed=old is not None and old!=data
+    if changed and s in ("CAD","Sentry","Scout"): self.details.clear()
     if changed:
      self.changes.insert(0,{"source":s,"at":at,"message":"Новая версия опубликованных данных; предыдущая сохранена в SQLite."})
      self.changes=self.changes[:100]
@@ -141,6 +142,10 @@ class Monitor:
    sb=self.fetch(JPL+"sbdb.api",{"sstr":des,"phys-par":"true","full-prec":"true","cov":"mat"})
    if "object" not in sb: raise ValueError(str(sb)[:400])
    result["sbdb"]=sb
+   try:
+    risk=self.fetch(JPL+"sentry.api",{"des":des})
+    if "summary" in risk: result["sentry"]=risk
+   except Exception as err: result["sentry_error"]=str(err)
   except Exception as e: result["sbdb_error"]=str(e)
   try:
    from astropy.time import Time
@@ -149,7 +154,7 @@ class Monitor:
     try: mid=dt.datetime.strptime(str(center),"%Y-%b-%d %H:%M").replace(tzinfo=UTC)
     except ValueError: pass
    start=Time(mid-dt.timedelta(days=2)).tdb.jd; end=Time(mid+dt.timedelta(days=2)).tdb.jd
-   command=des if des.isdigit() else des+";"
+   command=des+";"
    d=self.fetch("https://ssd.jpl.nasa.gov/api/horizons.api",{"format":"json","COMMAND":"'"+command+"'","OBJ_DATA":"'NO'","MAKE_EPHEM":"'YES'","EPHEM_TYPE":"'VECTORS'","CENTER":"'500@399'","START_TIME":"'JD"+str(start)+"'","STOP_TIME":"'JD"+str(end)+"'","STEP_SIZE":"'30 m'","OUT_UNITS":"'KM-S'","REF_PLANE":"'FRAME'","REF_SYSTEM":"'ICRF'","VEC_CORR":"'NONE'","VEC_TABLE":"'2'","CSV_FORMAT":"'YES'"})
    result["vectors"]=parse_vectors(d); result["frame"]="Earth center / ICRF / TDB / km, km/s"; result["jd_now"]=Time(now()).tdb.jd
   except Exception as e: result["vector_error"]=str(e)
@@ -183,7 +188,7 @@ class API:
 HTML=r"""<!doctype html><html lang="ru"><meta charset="utf-8"><title>Planetary Watch</title><style>
 :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#090f19;color:#d8e6f3;font:14px 'Segoe UI',sans-serif}header{display:flex;gap:18px;align-items:center;padding:18px 25px;border-bottom:1px solid #24364a}h1{font-size:21px;letter-spacing:2px;margin:0;color:#8be4f2}small,.muted{color:#8ca1b7}button,input,select{background:#17283b;color:#dce9f5;border:1px solid #334a60;padding:8px 12px;border-radius:6px;font:inherit}button{cursor:pointer}button:hover{border-color:#65cde0}main{display:grid;grid-template-columns:minmax(350px,42%) 1fr;gap:12px;padding:12px;height:calc(100vh - 80px)}section{min-width:0;background:#101a28;border:1px solid #23364a;border-radius:9px;padding:14px;overflow:auto}nav{display:flex;gap:5px;flex-wrap:wrap}h2{font-size:15px;color:#9cdce8}table{border-collapse:collapse;width:100%;font-size:12px}td,th{padding:8px;text-align:left;border-bottom:1px solid #26364a}tr[data-row]{cursor:pointer}tr[data-row]:hover{background:#1e3449}canvas{width:100%;height:360px;display:block;background:#050a12;border:1px solid #263c51;border-radius:7px;touch-action:none}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px}#status{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}.chip{font-size:11px;border:1px solid #395168;border-radius:5px;padding:4px 7px}.ok{color:#85d5b2}.error{color:#f2b570}.metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.metric{background:#172638;padding:9px;border-radius:5px;overflow-wrap:anywhere}a{color:#8be4f2}#list{max-height:65vh;overflow:auto}#scrub{width:100%}label{display:block;margin:8px 0} .wide{flex:1} @media(max-width:850px){main{grid-template-columns:1fr;height:auto}#list{max-height:400px}}
 </style><header><svg width="36" height="36" viewBox="0 0 64 64"><circle cx="32" cy="32" r="20" fill="#23638e"/><ellipse cx="32" cy="32" rx="30" ry="12" fill="none" stroke="#81ecf4" stroke-width="3" transform="rotate(-35 32 32)"/><circle cx="53" cy="17" r="5" fill="#f2b66d"/></svg><div class="wide"><h1>PLANETARY WATCH</h1><small>Исследовательский монитор · v0.1</small></div><span id="clock"></span><button onclick="api.refresh()">Обновить</button><button onclick="api.report()">Отчёт HTML</button></header><main><section><nav id="tabs"></nav><div id="status"></div><p class="muted">Проверяемые источники, а не непрерывная телеметрия. Отсутствие записей не доказывает отсутствие угрозы.</p><input id="search" placeholder="Название / обозначение" style="width:100%"><h2 id="count"></h2><div id="list"></div><h2>Журнал обновлений</h2><pre id="changes"></pre></section><section><h2 id="title">Выберите объект из списка</h2><div id="detailstatus" class="muted">Векторы загружаются по запросу.</div><nav><button onclick="load('now')">Текущая эпоха ±2 суток</button><button onclick="load(selected.cd||'now')">Эпоха сближения ±2 суток</button><button onclick="live=true">Текущее время</button><button onclick="api.open_source('ESA')">Официальные коридоры ESA ↗</button></nav><p class="muted">ICRF, центр Земли, TDB. Движение по опубликованным вектрам Horizons (гравитация учитывается поставщиком). Мышь: вращение; колесо: масштаб. Размер Земли в масштабе орбит.</p><canvas id="cv"></canvas><label>Расчётная эпоха <span id="epoch"></span><input id="scrub" type="range" min="0" max="1000" value="500"></label><div id="metrics" class="metrics"></div><h2>Формулы и подстановки</h2><pre id="math"></pre><h2>Орбитальные и физические параметры (SBDB)</h2><pre id="physical"></pre><h2>Опубликованный риск / координаты</h2><pre id="risk">Выберите объект.</pre></section></main><script>
-let api, st={data:{},status:{}}, tab='CAD', selected={}, detail=null, key='now', live=true, generation=0, received=0, yaw=.4,pitch=.5,zoom=1,drag=null;
+let api, st={data:{},status:{}}, tab='CAD', selected={}, detail=null, key='now', live=true, generation=0, received=0, yaw=.4,pitch=.5,zoom=1,drag=null, lastDetail=0;
 const $=x=>document.getElementById(x),esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),fmt=(x,d=5)=>Number.isFinite(x)?x.toLocaleString('ru-RU',{maximumFractionDigits:d}):'—';
 const tabs=['CAD','Sentry','Scout','ESA','Fireball'];
 $('tabs').innerHTML=tabs.map(t=>'<button data-tab="'+t+'">'+t+'</button>').join('');
@@ -199,7 +204,7 @@ function render(){
  $('list').onclick=e=>{let tr=e.target.closest('[data-row]');if(!tr)return;selected=items[Number(tr.dataset.row)];$('title').textContent=designation(selected)||'Запись';$('risk').textContent=JSON.stringify(selected,null,2)+'\n\nМесто падения: не определено. Проверяйте официальные коридоры. Номинальная траектория не определяет вероятность столкновения.';if(tab!=='Fireball')load('now');else{generation++;detail=null;$('detailstatus').textContent='Исторический болид; орбита не запрашивается.'}};
 }
 async function load(center){if(!designation(selected))return;key=center;detail=null;live=true;let id=++generation,des=designation(selected);$('detailstatus').textContent='Запрос эфемерид и SBDB: '+des;
- try{for(let i=0;i<100;i++){let d=await api.detail(des,center);if(id!==generation)return;if(d.state!=='loading'){detail=d;received=performance.now();$('detailstatus').textContent=d.error||d.vector_error||('Horizons: '+d.at+' · '+d.frame);$('physical').textContent=JSON.stringify(d.sbdb||d.sbdb_error||{},null,2);return}await new Promise(r=>setTimeout(r,1000))}}catch(e){$('detailstatus').textContent=String(e)}}
+ try{for(let i=0;i<100;i++){let d=await api.detail(des,center);if(id!==generation)return;if(d.state!=='loading'){detail=d;received=performance.now();lastDetail=Date.now();$('detailstatus').textContent=d.error||d.vector_error||('Horizons: '+d.at+' · '+d.frame);$('physical').textContent=JSON.stringify(d.sbdb||d.sbdb_error||{},null,2);$('risk').textContent=JSON.stringify({record:selected,sentry:d.sentry||d.sentry_error||'Нет опубликованных подробностей'},null,2)+'\nКоординаты падения: не определены; официальные карты ESA доступны по ссылке.';return}await new Promise(r=>setTimeout(r,1000))}}catch(e){$('detailstatus').textContent=String(e)}}
 const cv=$('cv'),ctx=cv.getContext('2d');cv.onpointerdown=e=>{drag=[e.clientX,e.clientY];cv.setPointerCapture(e.pointerId)};cv.onpointermove=e=>{if(drag){yaw+=(e.clientX-drag[0])*.01;pitch+=(e.clientY-drag[1])*.01;drag=[e.clientX,e.clientY]}};cv.onpointerup=()=>drag=null;cv.onwheel=e=>{e.preventDefault();zoom=Math.max(.1,Math.min(200,zoom*Math.exp(-e.deltaY*.001)))};
 $('scrub').oninput=()=>live=false;
 function hermite(a,b,t){let h=(b[0]-a[0])*86400,u=(t-a[0])*86400/h,p=[],v=[];for(let i=1;i<=3;i++){let x=a[i],y=b[i],f=a[i+3],g=b[i+3];p.push((2*u**3-3*u*u+1)*x+(u**3-2*u*u+u)*h*f+(-2*u**3+3*u*u)*y+(u**3-u*u)*h*g);v.push(((6*u*u-6*u)*x+(-6*u*u+6*u)*y)/h+(3*u*u-4*u+1)*f+(3*u*u-2*u)*g)}return[p,v]}
@@ -214,7 +219,7 @@ function draw(tick){requestAnimationFrame(draw);let w=cv.clientWidth,h=cv.client
  let i=a.findIndex(r=>r[0]>=t);i=Math.max(1,i);let [p,v]=hermite(a[i-1],a[i],t),xy=proj(p);ctx.fillStyle='#ffb96d';ctx.beginPath();ctx.arc(...xy,5,0,Math.PI*2);ctx.fill();ctx.fillText('Объект',xy[0]+8,xy[1]);
  if(tick-last>500){last=tick;if(live)$('scrub').value=(t-lo)/(hi-lo)*1000;$('epoch').textContent='JD '+t.toFixed(8)+' TDB';let d=Math.hypot(...p),speed=Math.hypot(...v),rad=d?p.reduce((s,x,i)=>s+x*v[i],0)/d:NaN,g=398600.4418/d**2;let fields=[['Расстояние, км',fmt(d,2)],['LD / AU',fmt(d/384400)+' / '+fmt(d/149597870.7,8)],['Скорость, км/с',fmt(speed)],['Радиальная скорость, км/с',fmt(rad)],['Ускорение Земли, м/с²',fmt(g*1000,10)],['Вектор X Y Z, км',p.map(x=>fmt(x,2)).join(' / ')],['VX VY VZ, км/с',v.map(x=>fmt(x)).join(' / ')]];$('metrics').innerHTML=fields.map(x=>'<div class="metric"><small>'+esc(x[0])+'</small><br>'+esc(x[1])+'</div>').join('');$('math').textContent='d = √(x²+y²+z²) = √('+p.map(x=>x.toFixed(3)+'²').join(' + ')+') = '+fmt(d)+' км\nv = √(vx²+vy²+vz²) = '+fmt(speed)+' км/с\nv_r = (r·v)/d = '+fmt(rad)+' км/с\n a_E = μ_E/d² = 398600.4418 / '+d.toFixed(3)+'² = '+g.toExponential(7)+' км/с²\nИнтерполяция Эрмита: r(u)=(2u³−3u²+1)r₀+(u³−2u²+u)hv₀+(−2u³+3u²)r₁+(u³−u²)hv₁.\nВращение и координаты падения неизвестны, если не опубликованы.'}}
 requestAnimationFrame(draw);
-window.addEventListener('pywebviewready',()=>{api=window.pywebview.api;async function poll(){try{st=await api.state();render()}catch(e){$('detailstatus').textContent=String(e)}setTimeout(poll,3000)}poll();setInterval(()=>$('clock').textContent=new Date().toLocaleString('ru-RU',{timeZone:'Asia/Yekaterinburg'})+' Уфа',1000)});
+window.addEventListener('pywebviewready',()=>{api=window.pywebview.api;async function poll(){try{st=await api.state();render();if(lastDetail&&Date.now()-lastDetail>900000&&designation(selected)){lastDetail=Date.now();load(key)}}catch(e){$('detailstatus').textContent=String(e)}setTimeout(poll,3000)}poll();setInterval(()=>$('clock').textContent=new Date().toLocaleString('ru-RU',{timeZone:'Asia/Yekaterinburg'})+' Уфа',1000)});
 </script></html>"""
 def icon():
  from PIL import Image,ImageDraw
