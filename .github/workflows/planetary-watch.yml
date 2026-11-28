@@ -1,0 +1,46 @@
+name: Planetary Watch Windows
+on:
+  push:
+    branches: ['planetary-watch/v0.1']
+    paths: ['planetary-watch/**', '.github/workflows/planetary-watch.yml']
+  pull_request:
+    branches: [main]
+    paths: ['planetary-watch/**', '.github/workflows/planetary-watch.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    if: github.event_name != 'pull_request' || github.head_ref == 'planetary-watch/v0.1'
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: planetary-watch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install "pywebview>=5.4,<7" "pyinstaller>=6.12,<7" "pillow>=11,<13" "astropy>=7,<8" tzdata
+      - name: Tests and icon
+        run: |
+          python planetary_watch.py --self-test
+          python planetary_watch.py --icon
+      - name: Build Windows executable
+        run: python -m PyInstaller --noconfirm --clean --windowed --onedir --name "PlanetaryWatch" --icon planetary.ico --collect-all astropy --collect-all tzdata --hidden-import webview.platforms.edgechromium planetary_watch.py
+      - name: Verify and package
+        shell: pwsh
+        run: |
+          if (!(Test-Path dist/PlanetaryWatch/PlanetaryWatch.exe)) { throw "EXE missing" }
+          Copy-Item planetary.ico,README.md dist/PlanetaryWatch/
+          Compress-Archive -Path dist/PlanetaryWatch -DestinationPath PlanetaryWatch_Portable.zip -Force
+          Get-FileHash PlanetaryWatch_Portable.zip -Algorithm SHA256 | Format-List | Out-File SHA256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PlanetaryWatch-Windows
+          path: |
+            planetary-watch/PlanetaryWatch_Portable.zip
+            planetary-watch/SHA256.txt
+            planetary-watch/planetary.ico
+          if-no-files-found: error
