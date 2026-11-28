@@ -3,11 +3,15 @@ on:
   push:
     branches: ['planetary-watch/v0.1']
     paths: ['planetary-watch/**', '.github/workflows/planetary-watch.yml']
+  pull_request:
+    branches: [main]
+    paths: ['planetary-watch/**', '.github/workflows/planetary-watch.yml']
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   windows:
+    if: github.event_name != 'pull_request' || github.head_ref == 'planetary-watch/v0.1'
     runs-on: windows-latest
     defaults:
       run:
